@@ -1,0 +1,804 @@
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: db-mycluster
+  labels:
+    mysql.oracle.com/cluster: mycluster
+    tier: mysql
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      component: mysqld
+      mysql.oracle.com/cluster: mycluster
+      tier: mysql
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        component: mysqld
+        mysql.oracle.com/cluster: mycluster
+        tier: mysql
+    spec:
+      volumes:
+        - name: mycnfdata
+          emptyDir: {}
+        - name: rundir
+          emptyDir: {}
+        - name: initconfdir
+          configMap:
+            name: mycluster-initconf
+            defaultMode: 493
+        - name: shellhome
+          emptyDir: {}
+      initContainers:
+        - name: fixdatadir
+          image: mysql/mysql-operator:8.0.30-2.0.5
+          command:
+            - bash
+            - '-c'
+            - chown 27:27 /var/lib/mysql && chmod 0700 /var/lib/mysql
+          resources: {}
+          volumeMounts:
+            - name: datadir
+              mountPath: /var/lib/mysql
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+        - name: initconf
+          image: mysql/mysql-operator:8.0.30-2.0.5
+          command:
+            - mysqlsh
+            - '--log-level=@INFO'
+            - '--pym'
+            - mysqloperator
+            - init
+          env:
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: MYSQLSH_USER_CONFIG_HOME
+              value: /tmp
+          resources: {}
+          volumeMounts:
+            - name: initconfdir
+              readOnly: true
+              mountPath: /mnt/initconf
+            - name: datadir
+              mountPath: /var/lib/mysql
+            - name: mycnfdata
+              mountPath: /mnt/mycnfdata
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 27
+        - name: initmysql
+          image: mysql/mysql-server:8.0.30
+          args:
+            - mysqld
+            - '--user=mysql'
+          env:
+            - name: MYSQL_INITIALIZE_ONLY
+              value: '1'
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mycluster-cluster-secret
+                  key: rootPassword
+            - name: MYSQLSH_USER_CONFIG_HOME
+              value: /tmp
+          resources: {}
+          volumeMounts:
+            - name: datadir
+              mountPath: /var/lib/mysql
+            - name: rundir
+              mountPath: /var/run/mysqld
+            - name: mycnfdata
+              mountPath: /etc/my.cnf.d
+              subPath: my.cnf.d
+            - name: mycnfdata
+              mountPath: /docker-entrypoint-initdb.d
+              subPath: docker-entrypoint-initdb.d
+            - name: mycnfdata
+              mountPath: /etc/my.cnf
+              subPath: my.cnf
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add:
+                - DAC_OVERRIDE
+                - SETGID
+                - SETUID
+                - SYS_NICE
+                - SYS_RESOURCE
+              drop:
+                - AUDIT_CONTROL
+                - AUDIT_WRITE
+                - BLOCK_SUSPEND
+                - CHOWN
+                - DAC_READ_SEARCH
+                - FOWNER
+                - FSETID
+                - IPC_LOCK
+                - IPC_OWNER
+                - KILL
+                - LEASE
+                - LINUX_IMMUTABLE
+                - MAC_ADMIN
+                - MAC_OVERRIDE
+                - MKNOD
+                - NET_ADMIN
+                - NET_BIND_SERVICE
+                - NET_BROADCAST
+                - NET_RAW
+                - SETFCAP
+                - SETPCAP
+                - SYS_ADMIN
+                - SYS_BOOT
+                - SYS_CHROOT
+                - SYS_MODULE
+                - SYS_PACCT
+                - SYS_PTRACE
+                - SYS_RAWIO
+                - SYS_TIME
+                - SYS_TTY_CONFIG
+                - SYSLOG
+                - WAKE_ALARM
+      containers:
+        - name: sidecar
+          image: mysql/mysql-operator:8.0.30-2.0.5
+          command:
+            - mysqlsh
+            - '--pym'
+            - mysqloperator
+            - sidecar
+          env:
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: MYSQL_UNIX_PORT
+              value: /var/run/mysqld/mysql.sock
+            - name: MYSQLSH_USER_CONFIG_HOME
+              value: /mysqlsh
+          resources: {}
+          volumeMounts:
+            - name: rundir
+              mountPath: /var/run/mysqld
+            - name: mycnfdata
+              mountPath: /etc/my.cnf.d
+              subPath: my.cnf.d
+            - name: mycnfdata
+              mountPath: /etc/my.cnf
+              subPath: my.cnf
+            - name: shellhome
+              mountPath: /mysqlsh
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 27
+        - name: mysql
+          image: mysql/mysql-server:8.0.30
+          args:
+            - mysqld
+            - '--user=mysql'
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+            - name: mysqlx
+              containerPort: 33060
+              protocol: TCP
+            - name: gr-xcom
+              containerPort: 33061
+              protocol: TCP
+          env:
+            - name: MYSQL_UNIX_PORT
+              value: /var/run/mysqld/mysql.sock
+          resources: {}
+          volumeMounts:
+            - name: datadir
+              mountPath: /var/lib/mysql
+            - name: rundir
+              mountPath: /var/run/mysqld
+            - name: mycnfdata
+              mountPath: /etc/my.cnf.d
+              subPath: my.cnf.d
+            - name: mycnfdata
+              mountPath: /etc/my.cnf
+              subPath: my.cnf
+            - name: initconfdir
+              mountPath: /livenessprobe.sh
+              subPath: livenessprobe.sh
+            - name: initconfdir
+              mountPath: /readinessprobe.sh
+              subPath: readinessprobe.sh
+          livenessProbe:
+            exec:
+              command:
+                - /livenessprobe.sh
+            initialDelaySeconds: 15
+            timeoutSeconds: 1
+            periodSeconds: 15
+            successThreshold: 1
+            failureThreshold: 10
+          readinessProbe:
+            exec:
+              command:
+                - /readinessprobe.sh
+            initialDelaySeconds: 10
+            timeoutSeconds: 1
+            periodSeconds: 5
+            successThreshold: 1
+            failureThreshold: 10000
+          startupProbe:
+            exec:
+              command:
+                - /livenessprobe.sh
+                - '8'
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+            periodSeconds: 3
+            successThreshold: 1
+            failureThreshold: 10000
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - '-c'
+                  - sleep 20 && mysqladmin -ulocalroot shutdown
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add:
+                - DAC_OVERRIDE
+                - SETGID
+                - SETUID
+                - SYS_NICE
+                - SYS_RESOURCE
+              drop:
+                - AUDIT_CONTROL
+                - AUDIT_WRITE
+                - BLOCK_SUSPEND
+                - CHOWN
+                - DAC_READ_SEARCH
+                - FOWNER
+                - FSETID
+                - IPC_LOCK
+                - IPC_OWNER
+                - KILL
+                - LEASE
+                - LINUX_IMMUTABLE
+                - MAC_ADMIN
+                - MAC_OVERRIDE
+                - MKNOD
+                - NET_ADMIN
+                - NET_BIND_SERVICE
+                - NET_BROADCAST
+                - NET_RAW
+                - SETFCAP
+                - SETPCAP
+                - SYS_ADMIN
+                - SYS_BOOT
+                - SYS_CHROOT
+                - SYS_MODULE
+                - SYS_PACCT
+                - SYS_PTRACE
+                - SYS_RAWIO
+                - SYS_TIME
+                - SYS_TTY_CONFIG
+                - SYSLOG
+                - WAKE_ALARM
+      restartPolicy: Always
+      serviceAccountName: mycluster-sa
+      serviceAccount: mycluster-sa
+      securityContext:
+        runAsUser: 27
+        runAsGroup: 27
+        fsGroup: 27
+      subdomain: mycluster
+      readinessGates:
+        - conditionType: mysql.oracle.com/configured
+        - conditionType: mysql.oracle.com/ready
+  volumeClaimTemplates:
+    - kind: PersistentVolumeClaim
+      apiVersion: v1
+      metadata:
+        name: datadir
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi
+        volumeMode: Filesystem
+  serviceName: mycluster-instances
+  podManagementPolicy: Parallel
+
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: mycluster-instances
+  labels:
+    mysql.oracle.com/cluster: mycluster
+    tier: mysql
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: 'true'
+spec:
+  ports:
+    - name: mysql
+      protocol: TCP
+      port: 3306
+      targetPort: 3306
+    - name: mysqlx
+      protocol: TCP
+      port: 33060
+      targetPort: 33060
+    - name: gr-xcom
+      protocol: TCP
+      port: 33061
+      targetPort: 33061
+  selector:
+    component: mysqld
+    mysql.oracle.com/cluster: mycluster
+    tier: mysql
+  clusterIP: None
+  type: ClusterIP
+  publishNotReadyAddresses: true
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: mycluster-initconf
+data:
+  00-basic.cnf: |
+    # Basic configuration.
+    # Do not edit.
+    [mysqld]
+    plugin_load_add=auth_socket.so
+    loose_auth_socket=FORCE_PLUS_PERMANENT
+    skip_log_error
+    log_error_verbosity=3
+  01-group_replication.cnf: |
+    # GR and replication related options
+    # Do not edit.
+    [mysqld]
+    log_bin=mycluster
+    enforce_gtid_consistency=ON
+    gtid_mode=ON
+    relay_log_info_repository=TABLE
+    skip_slave_start=1
+  02-ssl.cnf: |
+    # SSL configurations
+    # Do not edit.
+    [mysqld]
+    # ssl-ca=/etc/mysql-ssl/
+    # ssl-crl=/etc/mysql-ssl/crl.pem
+    # ssl-cert=/etc/mysql-ssl/tls.crt
+    # ssl-key=/etc/mysql-ssl/tls.key
+
+    loose_group_replication_recovery_use_ssl=1
+    # loose_group_replication_recovery_ssl_verify_server_cert=1
+
+    # loose_group_replication_recovery_ssl_ca=/etc/mysql-ssl/
+    ## loose_group_replication_recovery_ssl_crl=/etc/mysql-ssl/crl.pem
+    # loose_group_replication_recovery_ssl_cert=/etc/mysql-ssl/tls.crt
+    # loose_group_replication_recovery_ssl_key=/etc/mysql-ssl/tls.key
+  99-extra.cnf: |
+    # Additional user configurations taken from spec.mycnf in InnoDBCluster.
+    # Do not edit directly.
+  initdb-localroot.sql: >
+    set sql_log_bin=0;
+
+    # Create socket authenticated localroot@localhost account
+
+    CREATE USER localroot@localhost IDENTIFIED WITH auth_socket AS 'mysql';
+
+    GRANT ALL ON *.* TO localroot@localhost WITH GRANT OPTION;
+
+    GRANT PROXY ON ''@'' TO localroot@localhost WITH GRANT OPTION;
+
+    # Drop the default account created by the docker image
+
+    DROP USER IF EXISTS healthchecker@localhost;
+
+    # Create account for liveness probe
+
+    CREATE USER mysqlhealthchecker@localhost IDENTIFIED WITH auth_socket AS
+    'mysql';
+
+    set sql_log_bin=1;
+  livenessprobe.sh: |
+    #!/bin/bash
+    # Copyright (c) 2020, 2021, Oracle and/or its affiliates.
+
+    # Insert 1 success every this amount of failures
+    # (assumes successThreshold is > 1)
+    max_failures_during_progress=$1
+
+    # Ping the server to see if it's up
+    mysqladmin -umysqlhealthchecker ping
+    # If it's up, we succeed
+    if [ $? -eq 0 ]; then
+      exit 0
+    fi
+
+    if [ -z $max_failures_during_progress ]; then
+      exit 1
+    fi
+
+    # If the init/startup/InnoDB recovery is still ongoing, we're
+    # not succeeded nor failed yet, so keep failing and getting time
+    # extensions until it succeeds.
+    # We currently rely on the server to exit/abort if the init/startup fails,
+    # but ideally there would be a way to check whether the server is
+    # still making progress and not just stuck waiting on a frozen networked
+    # volume, for example.
+
+    if [ -f /fail-counter ]; then
+      fail_count=$(($(cat /fail-counter) + 1))
+    else
+      fail_count=1
+    fi
+
+    if [ $fail_count -gt $max_failures_during_progress ]; then
+      # Report success to reset the failure counter upstream and get
+      # a time extension
+      rm -f /fail-counter
+      exit 0
+    else
+      # Update the failure counter and fail out
+      echo $fail_count > /fail-counter
+      exit 1
+    fi
+  my.cnf.in: |
+    # Server identity related options (not shared across instances).
+    # Do not edit.
+    [mysqld]
+    server_id=@@SERVER_ID@@
+    report_host=@@HOSTNAME@@
+    datadir=/var/lib/mysql
+    loose_mysqlx_socket=/var/run/mysqld/mysqlx.sock
+    socket=/var/run/mysqld/mysql.sock
+    local-infile=1
+
+    [mysql]
+    socket=/var/run/mysqld/mysql.sock
+
+    [mysqladmin]
+    socket=/var/run/mysqld/mysql.sock
+
+    !includedir /etc/my.cnf.d
+  readinessprobe.sh: |
+    #!/bin/bash
+    # Copyright (c) 2020, 2021, Oracle and/or its affiliates.
+
+    # Once the container is ready, it's always ready.
+    if [ -f /mysql-ready ]; then
+      exit 0
+    fi
+
+    # Ping server to see if it is ready
+    if mysqladmin -umysqlhealthchecker ping; then
+      touch /mysql-ready
+      exit 0
+    else
+      exit 1
+    fi
+
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: mycluster-backup
+  labels:
+    mysql.oracle.com/cluster: mycluster
+    tier: mysql
+data:
+  backupPassword: RHROLjUtcHFnZHMtPVoycmMtMUNvYXgtVWcrRE4=
+  backupUsername: bXlzcWxiYWNrdXA=
+type: Opaque
+
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: mycluster-cluster-secret
+data:
+  rootHost: JQ==
+  rootPassword: c2FraWxh
+  rootUser: cm9vdA==
+type: Opaque
+
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: mycluster-privsecrets
+data:
+  clusterAdminPassword: eE0rLW8tVDR2N0stbjlsOVctcH5OY3UtMHNsNU0=
+  clusterAdminUsername: bXlzcWxhZG1pbg==
+type: Opaque
+
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: mycluster-sa
+
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: mysql-sidecar
+rules:
+  - verbs:
+      - get
+      - list
+      - watch
+      - patch
+    apiGroups:
+      - ''
+    resources:
+      - pods
+  - verbs:
+      - get
+      - patch
+      - update
+      - watch
+    apiGroups:
+      - ''
+    resources:
+      - pods/status
+  - verbs:
+      - get
+      - create
+      - list
+      - watch
+      - patch
+    apiGroups:
+      - ''
+    resources:
+      - secrets
+  - verbs:
+      - get
+      - create
+      - list
+      - watch
+      - patch
+    apiGroups:
+      - ''
+    resources:
+      - configmaps
+  - verbs:
+      - get
+      - create
+    apiGroups:
+      - ''
+    resources:
+      - services
+  - verbs:
+      - get
+      - create
+    apiGroups:
+      - ''
+    resources:
+      - serviceaccounts
+  - verbs:
+      - create
+      - patch
+      - update
+    apiGroups:
+      - ''
+    resources:
+      - events
+  - verbs:
+      - get
+      - patch
+    apiGroups:
+      - apps
+    resources:
+      - deployments
+  - verbs:
+      - get
+      - watch
+      - list
+    apiGroups:
+      - mysql.oracle.com
+    resources:
+      - innodbclusters
+  - verbs:
+      - create
+      - get
+      - list
+      - patch
+      - update
+      - watch
+      - delete
+    apiGroups:
+      - mysql.oracle.com
+    resources:
+      - mysqlbackups
+  - verbs:
+      - get
+      - patch
+      - update
+      - watch
+    apiGroups:
+      - mysql.oracle.com
+    resources:
+      - mysqlbackups/status
+
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: mycluster-sidecar-rb
+subjects:
+  - kind: ServiceAccount
+    name: mycluster-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mysql-sidecar
+
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: mycluster-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: mysqlrouter
+      mysql.oracle.com/cluster: mycluster
+      tier: mysql
+  template:
+    metadata:
+      labels:
+        component: mysqlrouter
+        mysql.oracle.com/cluster: mycluster
+        tier: mysql
+    spec:
+      containers:
+        - name: router
+          image: mysql/mysql-router:8.0.30
+          ports:
+            - name: mysqlrw
+              containerPort: 6446
+              protocol: TCP
+            - name: mysqlxrw
+              containerPort: 6448
+              protocol: TCP
+            - name: mysqlro
+              containerPort: 6447
+              protocol: TCP
+            - name: mysqlxro
+              containerPort: 6449
+              protocol: TCP
+            - name: http
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: MY_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: MYSQL_HOST
+              value: mycluster-instances.$(MY_NAMESPACE).svc.cluster.local
+            - name: MYSQL_PORT
+              value: '3306'
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mycluster-router
+                  key: routerUsername
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mycluster-router
+                  key: routerPassword
+            - name: MYSQL_CREATE_ROUTER_USER
+              value: '0'
+            - name: MYSQL_ROUTER_BOOTSTRAP_EXTRA_OPTIONS
+              value: '--conf-set-option=DEFAULT.unknown_config_option=warning'
+          resources: {}
+          livenessProbe:
+            httpGet:
+              path: /api/20190715/swagger.json
+              port: http
+              scheme: HTTPS
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - cat
+                - /tmp/mysqlrouter/mysqlrouter.conf
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          imagePullPolicy: IfNotPresent
+      restartPolicy: Always
+      serviceAccountName: mycluster-sa
+      serviceAccount: mycluster-sa
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: mycluster
+  labels:
+    mysql.oracle.com/cluster: mycluster
+    tier: mysql
+spec:
+  ports:
+    - name: mysql
+      protocol: TCP
+      port: 3306
+      targetPort: 6446
+    - name: mysqlx
+      protocol: TCP
+      port: 33060
+      targetPort: 6448
+    - name: mysql-alternate
+      protocol: TCP
+      port: 6446
+      targetPort: 6446
+    - name: mysqlx-alternate
+      protocol: TCP
+      port: 6448
+      targetPort: 6448
+    - name: mysql-ro
+      protocol: TCP
+      port: 6447
+      targetPort: 6447
+    - name: mysqlx-ro
+      protocol: TCP
+      port: 6449
+      targetPort: 6449
+  selector:
+    component: mysqlrouter
+    mysql.oracle.com/cluster: mycluster
+    tier: mysql
+  type: ClusterIP
+
+
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: mycluster-router
+data:
+  routerPassword: cXVkdmYtYnEyWjQtUEF0SX4tVlc0WWwtZVNfSDg=
+  routerUsername: bXlzcWxyb3V0ZXI=
+type: Opaque
